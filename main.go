@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jessevdk/go-flags"
 )
 
 const chromeLogListURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
@@ -34,6 +35,30 @@ type stream struct {
 	out    io.Writer
 	err    io.Writer
 	debug  bool
+}
+
+type cliDeps struct {
+	ctx    context.Context
+	client *http.Client
+	out    io.Writer
+	errOut io.Writer
+}
+
+type rootOptions struct {
+	List   listCommand   `command:"list" description:"List Chrome CT log URLs"`
+	Stream streamCommand `command:"stream" description:"Stream a CT log"`
+}
+
+type listCommand struct {
+	deps cliDeps
+}
+
+type streamCommand struct {
+	Start     int64 `long:"start" default:"-1" description:"Entry index to start from; -1 starts near the current tree tail"`
+	BatchSize int64 `long:"batch-size" default:"3" description:"Number of entries to request per poll"`
+	Debug     bool  `long:"debug" description:"Print retry and parse errors to stderr"`
+
+	deps cliDeps
 }
 
 type sthResponse struct {
@@ -61,7 +86,7 @@ type chromeLog struct {
 	State map[string]json.RawMessage `json:"state"`
 }
 
-type chromeWatchLog struct {
+type chromeStreamLog struct {
 	URL     string
 	Retired bool
 }
@@ -82,69 +107,69 @@ type tbsForAlgorithm struct {
 
 func main() {
 	if err := runCLI(context.Background(), os.Args[1:], http.DefaultClient, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] エラー: %v\n", err)
+		if flags.WroteHelp(err) {
+			fmt.Fprint(os.Stdout, err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func runCLI(ctx context.Context, args []string, client *http.Client, out, errOut io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("usage: certstream <logs|watch>")
+	deps := cliDeps{ctx: ctx, client: client, out: out, errOut: errOut}
+	opts := rootOptions{
+		List:   listCommand{deps: deps},
+		Stream: streamCommand{deps: deps},
 	}
-
-	switch args[0] {
-	case "logs":
-		return runLogs(ctx, client, out, args[1:])
-	case "watch":
-		cfg, err := parseWatchFlags(args[1:])
-		if err != nil {
-			return err
+	parser := flags.NewNamedParser("ctlog-go", flags.Default&^flags.PrintErrors)
+	parser.CommandHandler = func(command flags.Commander, args []string) error {
+		if command == nil {
+			return errors.New("usage: ctlog-go <list|stream>")
 		}
-		return stream{client: client, out: out, err: errOut, debug: cfg.debug}.run(ctx, cfg)
-	default:
-		return fmt.Errorf("unknown command %q; usage: certstream <logs|watch>", args[0])
+		return command.Execute(args)
 	}
+	if _, err := parser.AddGroup("Commands", "", &opts); err != nil {
+		return err
+	}
+	_, err := parser.ParseArgs(args)
+	return err
 }
 
-func parseWatchFlags(args []string) (config, error) {
-	flags := flag.NewFlagSet("watch", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	start := flags.Int64("start", -1, "entry index to start from; default is current tree size minus batch size")
-	batchSize := flags.Int64("batch-size", 3, "number of entries to request per poll")
-	debug := flags.Bool("debug", false, "print retry and parse errors to stderr")
-
-	if err := flags.Parse(args); err != nil {
-		return config{}, err
-	}
-	if flags.NArg() != 1 {
-		return config{}, errors.New("usage: certstream watch [options] <ct-log-url>")
-	}
-
-	return config{logURL: flags.Arg(0), start: *start, batchSize: *batchSize, debug: *debug}, nil
-}
-
-func runLogs(ctx context.Context, client *http.Client, out io.Writer, args []string) error {
+func (c *listCommand) Execute(args []string) error {
 	if len(args) != 0 {
-		return errors.New("usage: certstream logs")
+		return errors.New("usage: ctlog-go list")
 	}
+	return runList(c.deps.ctx, c.deps.client, c.deps.out)
+}
 
+func (c *streamCommand) Execute(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: ctlog-go stream [options] <ct-log-url>")
+	}
+	cfg := config{logURL: args[0], start: c.Start, batchSize: c.BatchSize, debug: c.Debug}
+	return stream{client: c.deps.client, out: c.deps.out, err: c.deps.errOut, debug: c.Debug}.run(c.deps.ctx, cfg)
+}
+
+func runList(ctx context.Context, client *http.Client, out io.Writer) error {
 	var list chromeLogList
 	s := stream{client: client, out: out, err: io.Discard}
 	if err := s.getJSON(ctx, chromeLogListURL, nil, &list); err != nil {
 		return err
 	}
 
-	for _, log := range chromeWatchLogs(list) {
-		fmt.Fprintln(out, formatChromeWatchLog(log))
+	for _, log := range chromeStreamLogs(list) {
+		fmt.Fprintln(out, formatChromeStreamLog(log))
 	}
 	return nil
 }
 
-func chromeWatchLogs(list chromeLogList) []chromeWatchLog {
-	var logs []chromeWatchLog
+func chromeStreamLogs(list chromeLogList) []chromeStreamLog {
+	var logs []chromeStreamLog
 	for _, operator := range list.Operators {
 		for _, log := range operator.Logs {
-			if watchURL := toWatchURL(log.URL); watchURL != "" {
-				logs = append(logs, chromeWatchLog{URL: watchURL, Retired: log.isRetired()})
+			if streamURL := toStreamURL(log.URL); streamURL != "" {
+				logs = append(logs, chromeStreamLog{URL: streamURL, Retired: log.isRetired()})
 			}
 		}
 	}
@@ -159,14 +184,14 @@ func (l chromeLog) isRetired() bool {
 	return ok
 }
 
-func formatChromeWatchLog(log chromeWatchLog) string {
+func formatChromeStreamLog(log chromeStreamLog) string {
 	if log.Retired {
 		return log.URL + " (retired)"
 	}
 	return log.URL
 }
 
-func toWatchURL(logURL string) string {
+func toStreamURL(logURL string) string {
 	logURL = strings.TrimRight(strings.TrimSpace(logURL), "/")
 	if logURL == "" {
 		return ""
@@ -182,14 +207,11 @@ func (s stream) run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	if cfg.batchSize < 1 {
-		return errors.New("batch-size must be greater than 0")
-	}
-	if cfg.start < -1 {
-		return errors.New("start must be -1 or greater")
+	if err := validateRange(cfg.start, -1, cfg.batchSize); err != nil {
+		return err
 	}
 
-	fmt.Fprintf(s.out, "[*] CT Log サーバーに接続中: %s\n", logURL)
+	fmt.Fprintf(s.out, "Connecting to CT log server: %s\n", logURL)
 
 	var sth sthResponse
 	if err := s.getJSON(ctx, logURL+"/get-sth", nil, &sth); err != nil {
@@ -207,7 +229,7 @@ func (s stream) run(ctx context.Context, cfg config) error {
 		index = 0
 	}
 
-	fmt.Fprintln(s.out, "[*] ストリーム開始。ドメイン名を抽出します...")
+	fmt.Fprintln(s.out, "Streaming started. Extracting domain names...")
 	fmt.Fprintln(s.out)
 	for {
 		select {
@@ -307,6 +329,16 @@ type httpStatusError struct {
 
 func (e httpStatusError) Error() string {
 	return fmt.Sprintf("%s returned HTTP %d", e.url, e.status)
+}
+
+func validateRange(start, minStart, batchSize int64) error {
+	if batchSize < 1 {
+		return errors.New("batch-size must be greater than 0")
+	}
+	if start < minStart {
+		return fmt.Errorf("start must be %d or greater", minStart)
+	}
+	return nil
 }
 
 func normalizeLogURL(logURL string) (string, error) {

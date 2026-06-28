@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jessevdk/go-flags"
 )
 
 const testLogURL = "https://ct.example.com/log/ct/v1"
@@ -72,30 +74,62 @@ func TestNormalizeLogURL(t *testing.T) {
 	}
 }
 
-func TestParseWatchFlags(t *testing.T) {
-	cfg, err := parseWatchFlags([]string{"-start", "10", "-batch-size", "5", "-debug", testLogURL})
+func TestStreamCommandParsesLongOptions(t *testing.T) {
+	cmd := streamCommand{}
+	parser := flags.NewParser(&cmd, flags.Default&^flags.PrintErrors)
+	args, err := parser.ParseArgs([]string{"--start", "10", "--batch-size", "5", "--debug", testLogURL})
 	if err != nil {
-		t.Fatalf("parseWatchFlags() error = %v, want nil", err)
+		t.Fatalf("ParseArgs() error = %v, want nil", err)
 	}
-	if cfg.logURL != testLogURL || cfg.start != 10 || cfg.batchSize != 5 || !cfg.debug {
-		t.Fatalf("parseWatchFlags() = %#v", cfg)
+	if !reflect.DeepEqual(args, []string{testLogURL}) {
+		t.Fatalf("ParseArgs() args = %#v, want %#v", args, []string{testLogURL})
 	}
-}
-
-func TestParseWatchFlagsRequiresSingleURL(t *testing.T) {
-	tests := [][]string{
-		nil,
-		{testLogURL, "https://ct.example.net/log/ct/v1"},
-	}
-
-	for _, args := range tests {
-		if _, err := parseWatchFlags(args); err == nil {
-			t.Fatalf("parseWatchFlags(%#v) error = nil, want error", args)
-		}
+	if cmd.Start != 10 || cmd.BatchSize != 5 || !cmd.Debug {
+		t.Fatalf("streamCommand = %#v", cmd)
 	}
 }
 
-func TestChromeWatchLogs(t *testing.T) {
+func TestStreamCommandRejectsShortStyleOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "start", args: []string{"-start", "10", testLogURL}},
+		{name: "batch size", args: []string{"-batch-size", "5", testLogURL}},
+		{name: "debug", args: []string{"-debug", testLogURL}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := runCLI(context.Background(), append([]string{"stream"}, tt.args...), http.DefaultClient, io.Discard, io.Discard); err == nil {
+				t.Fatalf("runCLI(%#v) error = nil, want error", tt.args)
+			}
+		})
+	}
+}
+
+func TestRunCLICommandErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "no command"},
+		{name: "unknown command", args: []string{"unknown"}},
+		{name: "list rejects extra args", args: []string{"list", testLogURL}},
+		{name: "stream requires URL", args: []string{"stream"}},
+		{name: "stream rejects extra URL", args: []string{"stream", testLogURL, "https://ct.example.net/log/ct/v1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := runCLI(context.Background(), tt.args, http.DefaultClient, io.Discard, io.Discard); err == nil {
+				t.Fatalf("runCLI(%#v) error = nil, want error", tt.args)
+			}
+		})
+	}
+}
+
+func TestChromeStreamLogs(t *testing.T) {
 	list := chromeLogList{
 		Operators: []chromeLogOperator{
 			{Logs: []chromeLog{
@@ -109,38 +143,38 @@ func TestChromeWatchLogs(t *testing.T) {
 		},
 	}
 
-	got := chromeWatchLogs(list)
-	want := []chromeWatchLog{
+	got := chromeStreamLogs(list)
+	want := []chromeStreamLog{
 		{URL: "https://ct.example.com/log-a/ct/v1"},
 		{URL: "https://ct.example.com/log-b/ct/v1", Retired: true},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("chromeWatchLogs() = %#v, want %#v", got, want)
+		t.Fatalf("chromeStreamLogs() = %#v, want %#v", got, want)
 	}
 }
 
-func TestFormatChromeWatchLog(t *testing.T) {
+func TestFormatChromeStreamLog(t *testing.T) {
 	tests := []struct {
 		name string
-		log  chromeWatchLog
+		log  chromeStreamLog
 		want string
 	}{
 		{
 			name: "active",
-			log:  chromeWatchLog{URL: "https://ct.example.com/log/ct/v1"},
+			log:  chromeStreamLog{URL: "https://ct.example.com/log/ct/v1"},
 			want: "https://ct.example.com/log/ct/v1",
 		},
 		{
 			name: "retired",
-			log:  chromeWatchLog{URL: "https://ct.example.com/log/ct/v1", Retired: true},
+			log:  chromeStreamLog{URL: "https://ct.example.com/log/ct/v1", Retired: true},
 			want: "https://ct.example.com/log/ct/v1 (retired)",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatChromeWatchLog(tt.log); got != tt.want {
-				t.Fatalf("formatChromeWatchLog() = %q, want %q", got, tt.want)
+			if got := formatChromeStreamLog(tt.log); got != tt.want {
+				t.Fatalf("formatChromeStreamLog() = %q, want %q", got, tt.want)
 			}
 		})
 	}
