@@ -57,7 +57,13 @@ type chromeLogOperator struct {
 }
 
 type chromeLog struct {
-	URL string `json:"url"`
+	URL   string                     `json:"url"`
+	State map[string]json.RawMessage `json:"state"`
+}
+
+type chromeWatchLog struct {
+	URL     string
+	Retired bool
 }
 
 type tbsForAlgorithm struct {
@@ -127,23 +133,37 @@ func runLogs(ctx context.Context, client *http.Client, out io.Writer, args []str
 		return err
 	}
 
-	for _, logURL := range chromeWatchURLs(list) {
-		fmt.Fprintln(out, logURL)
+	for _, log := range chromeWatchLogs(list) {
+		fmt.Fprintln(out, formatChromeWatchLog(log))
 	}
 	return nil
 }
 
-func chromeWatchURLs(list chromeLogList) []string {
-	var urls []string
+func chromeWatchLogs(list chromeLogList) []chromeWatchLog {
+	var logs []chromeWatchLog
 	for _, operator := range list.Operators {
 		for _, log := range operator.Logs {
 			if watchURL := toWatchURL(log.URL); watchURL != "" {
-				urls = append(urls, watchURL)
+				logs = append(logs, chromeWatchLog{URL: watchURL, Retired: log.isRetired()})
 			}
 		}
 	}
-	sort.Strings(urls)
-	return urls
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].URL < logs[j].URL
+	})
+	return logs
+}
+
+func (l chromeLog) isRetired() bool {
+	_, ok := l.State["retired"]
+	return ok
+}
+
+func formatChromeWatchLog(log chromeWatchLog) string {
+	if log.Retired {
+		return log.URL + " (retired)"
+	}
+	return log.URL
 }
 
 func toWatchURL(logURL string) string {

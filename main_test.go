@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"math/big"
 	"net/http"
@@ -94,24 +95,54 @@ func TestParseWatchFlagsRequiresSingleURL(t *testing.T) {
 	}
 }
 
-func TestChromeWatchURLs(t *testing.T) {
+func TestChromeWatchLogs(t *testing.T) {
 	list := chromeLogList{
 		Operators: []chromeLogOperator{
 			{Logs: []chromeLog{
 				{URL: " https://ct.example.com/log-a/ "},
-				{URL: "https://ct.example.com/log-b/ct/v1"},
+				{
+					URL:   "https://ct.example.com/log-b/ct/v1",
+					State: map[string]json.RawMessage{"retired": json.RawMessage(`{"timestamp":"1234"}`)},
+				},
 				{URL: ""},
 			}},
 		},
 	}
 
-	got := chromeWatchURLs(list)
-	want := []string{
-		"https://ct.example.com/log-a/ct/v1",
-		"https://ct.example.com/log-b/ct/v1",
+	got := chromeWatchLogs(list)
+	want := []chromeWatchLog{
+		{URL: "https://ct.example.com/log-a/ct/v1"},
+		{URL: "https://ct.example.com/log-b/ct/v1", Retired: true},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("chromeWatchURLs() = %#v, want %#v", got, want)
+		t.Fatalf("chromeWatchLogs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFormatChromeWatchLog(t *testing.T) {
+	tests := []struct {
+		name string
+		log  chromeWatchLog
+		want string
+	}{
+		{
+			name: "active",
+			log:  chromeWatchLog{URL: "https://ct.example.com/log/ct/v1"},
+			want: "https://ct.example.com/log/ct/v1",
+		},
+		{
+			name: "retired",
+			log:  chromeWatchLog{URL: "https://ct.example.com/log/ct/v1", Retired: true},
+			want: "https://ct.example.com/log/ct/v1 (retired)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatChromeWatchLog(tt.log); got != tt.want {
+				t.Fatalf("formatChromeWatchLog() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
