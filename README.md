@@ -42,8 +42,8 @@ line.
 
 `ctlog-go stream <URL>` streams one CT log. Options are long-form only:
 
-- `--start`: Entry index to start from. The default `-1` starts near the current
-  tree tail.
+- `--start`: Entry index to start from. The default `-1` starts from the
+  current tree size minus 2,000,000,000 entries.
 - `--batch-size`: Number of entries requested per poll. Default is `3`.
 - `--debug`: Print retry and parse errors to stderr.
 

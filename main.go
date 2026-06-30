@@ -21,7 +21,10 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
-const chromeLogListURL = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
+const (
+	chromeLogListURL    = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
+	defaultStartBacklog = 2_000_000_000
+)
 
 type config struct {
 	logURL    string
@@ -54,7 +57,7 @@ type listCommand struct {
 }
 
 type streamCommand struct {
-	Start     int64 `long:"start" default:"-1" description:"Entry index to start from; -1 starts near the current tree tail"`
+	Start     int64 `long:"start" default:"-1" description:"Entry index to start from; -1 starts from the default tail backlog"`
 	BatchSize int64 `long:"batch-size" default:"3" description:"Number of entries to request per poll"`
 	Debug     bool  `long:"debug" description:"Print retry and parse errors to stderr"`
 
@@ -221,13 +224,7 @@ func (s stream) run(ctx context.Context, cfg config) error {
 		return errors.New("tree_size is too small")
 	}
 
-	index := cfg.start
-	if index < 0 {
-		index = sth.TreeSize - cfg.batchSize
-	}
-	if index < 0 {
-		index = 0
-	}
+	index := startIndex(cfg.start, sth.TreeSize)
 
 	fmt.Fprintln(s.out, "Streaming started. Extracting domain names...")
 	fmt.Fprintln(s.out)
@@ -245,13 +242,24 @@ func (s stream) run(ctx context.Context, cfg config) error {
 		}
 
 		for _, entry := range entries {
-			s.printEntry(index, entry)
+			s.printEntry(logURL, index, entry)
 			index++
 		}
 		if len(entries) == 0 {
 			sleepContext(ctx, 300*time.Millisecond)
 		}
 	}
+}
+
+func startIndex(start, treeSize int64) int64 {
+	if start >= 0 {
+		return start
+	}
+	index := treeSize - defaultStartBacklog
+	if index < 0 {
+		return 0
+	}
+	return index
 }
 
 func (s stream) fetchBatch(ctx context.Context, logURL string, start, end int64) ([]ctEntry, time.Duration) {
@@ -271,7 +279,7 @@ func (s stream) fetchBatch(ctx context.Context, logURL string, start, end int64)
 	return nil, time.Second
 }
 
-func (s stream) printEntry(index int64, entry ctEntry) {
+func (s stream) printEntry(logURL string, index int64, entry ctEntry) {
 	if entry.LeafInput == "" {
 		s.debugf("entry %d: missing leaf_input", index)
 		return
@@ -283,8 +291,12 @@ func (s stream) printEntry(index int64, entry ctEntry) {
 		return
 	}
 	if len(domains) > 0 {
-		fmt.Fprintf(s.out, "[%d] %s\n", index, strings.Join(domains, ", "))
+		fmt.Fprintf(s.out, "[%d] %s - %s\n", index, displayLogURL(logURL), strings.Join(domains, ", "))
 	}
+}
+
+func displayLogURL(logURL string) string {
+	return strings.TrimSuffix(logURL, "/ct/v1") + "/"
 }
 
 func (s stream) getJSON(ctx context.Context, rawURL string, params url.Values, v any) error {

@@ -205,6 +205,27 @@ func TestRunRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestStartIndex(t *testing.T) {
+	tests := []struct {
+		name     string
+		start    int64
+		treeSize int64
+		want     int64
+	}{
+		{name: "explicit start", start: 123, treeSize: 3_000_000_000, want: 123},
+		{name: "default tail backlog", start: -1, treeSize: 2_650_546_745, want: 650_546_745},
+		{name: "small tree starts at zero", start: -1, treeSize: 100, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := startIndex(tt.start, tt.treeSize); got != tt.want {
+				t.Fatalf("startIndex() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDebugf(t *testing.T) {
 	var buf strings.Builder
 	stream{err: &buf, debug: true}.debugf("entry %d: %s", 12, "bad")
@@ -277,6 +298,25 @@ func TestParseDomainsFromEntryMalformedInputs(t *testing.T) {
 				t.Fatalf("parseDomainsFromEntry() = %#v, want empty result", got)
 			}
 		})
+	}
+}
+
+func TestPrintEntryIncludesLogURL(t *testing.T) {
+	certDER := testCertificateDER(t, "gestancias.com", []string{"www.gestancias.com", "gestancias.com"})
+	entry := ctEntry{LeafInput: base64.StdEncoding.EncodeToString(testLeafInput(0, certDER))}
+
+	var buf strings.Builder
+	stream{out: &buf, err: io.Discard}.printEntry("https://ct.googleapis.com/logs/us1/argon2026h1/ct/v1", 650546745, entry)
+
+	want := "[650546745] https://ct.googleapis.com/logs/us1/argon2026h1/ - gestancias.com, www.gestancias.com\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("printEntry() wrote %q, want %q", got, want)
+	}
+}
+
+func TestDisplayLogURL(t *testing.T) {
+	if got, want := displayLogURL(testLogURL), "https://ct.example.com/log/"; got != want {
+		t.Fatalf("displayLogURL() = %q, want %q", got, want)
 	}
 }
 
